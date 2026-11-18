@@ -1,0 +1,118 @@
+import streamlit as st
+import pandas as pd
+import datetime
+import sqlite3
+
+# Configuração da Página
+st.set_page_config(
+    page_title="BarberFin & Ops | Gestão Local",
+    page_icon="✂️",
+    layout="wide"
+)
+
+# Inicialização do Banco de Dados SQLite Local (Sem erros de nuvem)
+@st.cache_resource
+def get_db_connection():
+    conn = sqlite3.connect('barbearia_local.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS transacoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data TEXT,
+            cliente TEXT,
+            profissional TEXT,
+            servico TEXT,
+            valor_bruto REAL,
+            forma_pgto TEXT,
+            taxa_operadora REAL,
+            comissao_pct REAL
+        )
+    ''')
+    conn.commit()
+    return conn
+
+conn = get_db_connection()
+
+st.title("✂️ BarberFin & Ops - Caixa Local Inteligente")
+st.markdown("Gerenciamento operacional 100% local, seguro e sem falhas de conexão externa.")
+
+# Menu Lateral para Lançamentos
+st.sidebar.header("📥 Novo Lançamento")
+with st.sidebar.form("form_transacao", clear_on_submit=True):
+    data_atendimento = st.date_input("Data", datetime.date.today())
+    cliente = st.text_input("Nome do Cliente")
+    profissional = st.selectbox("Profissional", ["Carlos (Barbeiro)", "Marcos (Barbeiro)", "Ana (Manicure)", "Loja (Produtos)"])
+    servico = st.text_input("Serviço / Produto", "Corte + Barba")
+    valor_bruto = st.number_input("Valor Bruto (R$)", min_value=0.0, format="%.2f")
+    
+    forma_pgto = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Débito", "Crédito à Vista", "Crédito Parcelado"])
+    
+    # Taxas padrão automáticas das maquininhas
+    taxa_padrao = 0.0
+    if forma_pgto == "Débito": taxa_padrao = 1.99
+    elif forma_pgto == "Crédito à Vista": taxa_padrao = 3.49
+    elif forma_pgto == "Crédito Parcelado": taxa_padrao = 4.99
+    elif forma_pgto == "Pix": taxa_padrao = 0.99
+    
+    taxa_op = st.number_input("Taxa da Operadora (%)", value=taxa_padrao, format="%.2f")
+    comissao_prof = st.slider("Comissão do Profissional (%)", min_value=0, max_value=100, value=50)
+    
+    submitted = st.form_submit_button("Registrar Transação")
+    if submitted and valor_bruto > 0:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO transacoes (data, cliente, profissional, servico, valor_bruto, forma_pgto, taxa_operadora, comissao_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (str(data_atendimento), cliente, profissional, servico, valor_bruto, forma_pgto, taxa_op, comissao_prof))
+        conn.commit()
+        st.sidebar.success("Transação salva com sucesso no banco local!")
+        st.rerun()
+
+# Carregar dados do banco SQLite
+df = pd.read_sql_query("SELECT * FROM transacoes", conn)
+
+# Layout Principal: Métricas e Indicadores
+if not df.empty:
+    # Cálculos financeiros avançados
+    df["Valor Taxa"] = df["Valor Bruto"] * (df["Taxa Operadora"] / 100)
+    df["Valor Líquido"] = df["Valor Bruto"] - df["Valor Taxa"]
+    df["Comissão Profissional"] = df["Valor Líquido"] * (df["comissao_pct"] / 100)
+    df["Receita Líquida Salão"] = df["Valor Líquido"] - df["Comissão Profissional"]
+    
+    # Métricas Topo
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Faturamento Bruto", f"R$ {df['Valor Bruto'].sum():,.2f}")
+    col2.metric("Taxas de Pagamento", f"R$ {df['Valor Taxa'].sum():,.2f}", delta_color="inverse")
+    col3.metric("Comissões a Repassar", f"R$ {df['Comissão Profissional'].sum():,.2f}")
+    col4.metric("Receita Líquida do Salão", f"R$ {df['Receita Líquida Salão'].sum():,.2f}")
+    
+    st.divider()
+    
+    # Tabelas e Relatórios
+    st.subheader("📊 Extrato Consolidado de Caixa e Splits")
+    st.dataframe(df[["data", "cliente", "profissional", "servico", "valor_bruto", "forma_pgto", "Receita Líquida Salão"]], use_container_width=True)
+    
+    # Resumo por Profissional
+    st.subheader("👥 Fechamento de Comissões por Profissional")
+    resumo_prof = df.groupby("profissional")[["valor_bruto", "Comissão Profissional"]].sum().reset_index()
+    resumo_prof.columns = ["Profissional", "Faturamento Gerado", "Comissão Total a Pagar"]
+    st.table(resumo_prof)
+    
+    # Botão para exportar dados e botão para limpar base se necessário
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Baixar Relatório em CSV",
+            data=csv,
+            file_name='fechamento_caixa_barbearia.csv',
+            mime='text/csv',
+        )
+    with col_dl2:
+        if st.button("🗑️ Apagar Todo o Histórico de Caixa"):
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM transacoes")
+            conn.commit()
+            st.rerun()
+else:
+    st.info("Nenhuma transação registrada no banco de dados local. Utilize a barra lateral para começar a lançar os atendimentos.")
